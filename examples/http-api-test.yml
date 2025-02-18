@@ -1,0 +1,79 @@
+name: API Load Test
+virtual_users: 100
+duration: 5m
+target: http://api.example.com
+protocol: HTTP
+
+distribution:
+  pattern: RAMP_UP
+  ramp_up: 30s
+  ramp_down: 30s
+  geographic:
+    us-west: 40
+    us-east: 40
+    eu-west: 20
+
+scenarios:
+  - name: user-journey
+    weight: 0.7
+    steps:
+      - name: login
+        method: POST
+        path: /api/v1/auth/login
+        headers:
+          Content-Type: application/json
+        body: |
+          {
+            "username": "testuser",
+            "password": "password123"
+          }
+        think_time: 2s
+        assertions:
+          - type: STATUS_CODE
+            expected: 200
+          - type: RESPONSE_TIME
+            expected: 500ms
+
+      - name: get-profile
+        method: GET
+        path: /api/v1/profile
+        headers:
+          Authorization: "Bearer ${token}"
+        think_time: 1s
+        assertions:
+          - type: STATUS_CODE
+            expected: 200
+
+      - name: update-profile
+        method: PUT
+        path: /api/v1/profile
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer ${token}"
+        body: |
+          {
+            "name": "Test User",
+            "email": "test@example.com"
+          }
+        think_time: 2s
+
+  - name: product-browse
+    weight: 0.3
+    steps:
+      - name: list-products
+        method: GET
+        path: /api/v1/products
+        think_time: 1s
+        assertions:
+          - type: RESPONSE_TIME
+            expected: 1s
+
+      - name: get-product-details
+        method: GET
+        path: /api/v1/products/${product_id}
+        think_time: 2s
+
+      - name: search-products
+        method: GET
+        path: /api/v1/products/search?q=test
+        think_time: 1s

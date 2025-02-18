@@ -1,0 +1,74 @@
+name: gRPC Service Load Test
+virtual_users: 50
+duration: 10m
+target: grpc.example.com:50051
+protocol: GRPC
+
+distribution:
+  pattern: CONSTANT
+  geographic:
+    default: 100
+
+scenarios:
+  - name: user-service
+    weight: 0.6
+    steps:
+      - name: create-user
+        method: UserService/CreateUser
+        body: |
+          {
+            "name": "John Doe",
+            "email": "john@example.com",
+            "role": "user"
+          }
+        think_time: 1s
+        assertions:
+          - type: RESPONSE_TIME
+            expected: 200ms
+
+      - name: get-user
+        method: UserService/GetUser
+        body: |
+          {
+            "id": "${user_id}"
+          }
+        think_time: 500ms
+
+      - name: update-user
+        method: UserService/UpdateUser
+        body: |
+          {
+            "id": "${user_id}",
+            "name": "John Updated",
+            "email": "john.updated@example.com"
+          }
+        think_time: 1s
+
+  - name: product-service
+    weight: 0.4
+    steps:
+      - name: list-products
+        method: ProductService/ListProducts
+        body: |
+          {
+            "page": 1,
+            "limit": 10
+          }
+        think_time: 1s
+
+      - name: get-product
+        method: ProductService/GetProduct
+        body: |
+          {
+            "id": "${product_id}"
+          }
+        think_time: 500ms
+
+      - name: search-products
+        method: ProductService/SearchProducts
+        body: |
+          {
+            "query": "test",
+            "limit": 10
+          }
+        think_time: 1s

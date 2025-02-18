@@ -1,0 +1,211 @@
+syntax = "proto3";
+
+package loadtest;
+
+option go_package = "github.com/saika-m/goload/api/proto";
+
+// LoadTest service defines the gRPC interface for distributed load testing
+service LoadTest {
+  // Master node APIs
+  rpc StartTest(StartTestRequest) returns (StartTestResponse) {}
+  rpc StopTest(StopTestRequest) returns (StopTestResponse) {}
+  rpc GetTestStatus(TestStatusRequest) returns (TestStatusResponse) {}
+  
+  // Worker node APIs
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse) {}
+  rpc ReportMetrics(stream MetricsBatch) returns (ReportMetricsResponse) {}
+  rpc ReportResults(stream ResultsBatch) returns (ReportResultsResponse) {}
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
+
+message StartTestRequest {
+  string test_id = 1;
+  TestConfig config = 2;
+}
+
+message StartTestResponse {
+  string test_id = 1;
+  TestStatus status = 2;
+}
+
+message StopTestRequest {
+  string test_id = 1;
+}
+
+message StopTestResponse {
+  string test_id = 1;
+  TestStatus status = 2;
+}
+
+message TestStatusRequest {
+  string test_id = 1;
+}
+
+message TestStatusResponse {
+  string test_id = 1;
+  TestStatus status = 2;
+}
+
+message RegisterWorkerRequest {
+  WorkerInfo worker_info = 1;
+}
+
+message RegisterWorkerResponse {
+  string worker_id = 1;
+  WorkerConfig config = 2;
+}
+
+message MetricsBatch {
+  string worker_id = 1;
+  string test_id = 2;
+  repeated Metric metrics = 3;
+  int64 timestamp = 4;
+}
+
+message ReportMetricsResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ResultsBatch {
+  string worker_id = 1;
+  string test_id = 2;
+  repeated RequestResult results = 3;
+  int64 timestamp = 4;
+}
+
+message ReportResultsResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  ResourceStats resource_stats = 2;
+  int64 timestamp = 3;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message TestConfig {
+  int32 virtual_users = 1;
+  int64 duration_seconds = 2;
+  string target_url = 3;
+  Protocol protocol = 4;
+  map<string, string> headers = 5;
+  repeated ScenarioConfig scenarios = 6;
+  Distribution distribution = 7;
+  repeated Assertion assertions = 8;
+}
+
+enum Protocol {
+  HTTP = 0;
+  GRPC = 1;
+  WEBSOCKET = 2;
+}
+
+message ScenarioConfig {
+  string name = 1;
+  double weight = 2;
+  repeated RequestStep steps = 3;
+}
+
+message RequestStep {
+  string name = 1;
+  string method = 2;
+  string path = 3;
+  map<string, string> headers = 4;
+  bytes body = 5;
+  int32 think_time_ms = 6;
+  repeated Assertion assertions = 7;
+}
+
+message Distribution {
+  LoadPattern pattern = 1;
+  int32 ramp_up_seconds = 2;
+  int32 ramp_down_seconds = 3;
+  map<string, double> geographic = 4;
+}
+
+enum LoadPattern {
+  CONSTANT = 0;
+  RAMP_UP = 1;
+  STEP = 2;
+  RANDOM = 3;
+}
+
+message Assertion {
+  AssertionType type = 1;
+  string target = 2;
+  string expected = 3;
+}
+
+enum AssertionType {
+  STATUS_CODE = 0;
+  RESPONSE_TIME = 1;
+  BODY_CONTAINS = 2;
+  BODY_MATCHES = 3;
+  HEADER_MATCHES = 4;
+}
+
+message TestStatus {
+  string test_id = 1;
+  TestState state = 2;
+  int32 active_users = 3;
+  int64 total_requests = 4;
+  double error_rate = 5;
+  double avg_response_time = 6;
+  string message = 7;
+}
+
+enum TestState {
+  PENDING = 0;
+  RUNNING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+  CANCELLED = 4;
+}
+
+message WorkerInfo {
+  string id = 1;
+  string hostname = 2;
+  int32 capacity = 3;
+  ResourceStats resources = 4;
+}
+
+message WorkerConfig {
+  string worker_id = 1;
+  string master_endpoint = 2;
+  map<string, string> settings = 3;
+}
+
+message ResourceStats {
+  int32 cpu_cores = 1;
+  int64 memory_mb = 2;
+  double cpu_usage = 3;
+  double memory_usage = 4;
+}
+
+message Metric {
+  string name = 1;
+  double value = 2;
+  map<string, string> labels = 3;
+  string type = 4;
+  int64 timestamp = 5;
+}
+
+message RequestResult {
+  string worker_id = 1;
+  string test_id = 2;
+  string scenario_name = 3;
+  string request_name = 4;
+  int64 start_time = 5;
+  int64 duration_ms = 6;
+  int32 status_code = 7;
+  string error = 8;
+  int64 bytes_sent = 9;
+  int64 bytes_received = 10;
+}

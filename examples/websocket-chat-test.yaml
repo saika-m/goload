@@ -1,0 +1,73 @@
+name: WebSocket Chat Service Load Test
+virtual_users: 200
+duration: 15m
+target: ws://chat.example.com/ws
+protocol: WEBSOCKET
+
+distribution:
+  pattern: STEP
+  ramp_up: 1m
+  geographic:
+    us-west: 50
+    eu-west: 50
+
+scenarios:
+  - name: chat-user
+    weight: 1.0
+    steps:
+      - name: connect
+        method: CONNECT
+        headers:
+          Authorization: "Bearer ${token}"
+        think_time: 2s
+        assertions:
+          - type: CONNECTION_SUCCESS
+            expected: true
+
+      - name: join-room
+        body: |
+          {
+            "type": "join",
+            "room": "general"
+          }
+        think_time: 1s
+
+      - name: send-messages
+        repeat: 10
+        body: |
+          {
+            "type": "message",
+            "room": "general",
+            "content": "Hello from user ${user_id}"
+          }
+        think_time: 5s
+        assertions:
+          - type: RESPONSE_TIME
+            expected: 100ms
+
+      - name: typing-indicator
+        repeat: 5
+        body: |
+          {
+            "type": "typing",
+            "room": "general",
+            "status": true
+          }
+        think_time: 3s
+
+      - name: read-receipt
+        body: |
+          {
+            "type": "read",
+            "room": "general",
+            "message_id": "${last_message_id}"
+          }
+        think_time: 1s
+
+      - name: leave-room
+        body: |
+          {
+            "type": "leave",
+            "room": "general"
+          }
+        think_time: 2s
