@@ -7,7 +7,37 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm
+            goarm: 7
+            suffix: linux-armv7
+          - os: ubuntu-latest
+            goos: darwin
+            goarch: amd64
+            suffix: macos-amd64
+          - os: ubuntu-latest
+            goos: darwin
+            goarch: arm64
+            suffix: macos-arm64
+          - os: ubuntu-latest
+            goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+    
+    runs-on: ${{ matrix.os }}
+    
     steps:
       - uses: actions/checkout@v3
       
@@ -16,23 +46,72 @@ jobs:
         with:
           go-version: '1.22'
           
-      - name: Build binaries
-        run: make build-all
-        
-      - name: Create archives
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
         run: |
-          tar -czvf goload-linux-amd64.tar.gz -C dist/linux goload
-          tar -czvf goload-darwin-amd64.tar.gz -C dist/darwin goload
-          zip -j goload-windows-amd64.zip dist/windows/goload.exe
-          sha256sum goload-*.tar.gz goload-*.zip > checksums.txt
+          # Create output directory
+          mkdir -p dist
           
-      - name: Create Release
+          # Set binary name based on OS
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="goload.exe"
+          else
+            BINARY_NAME="goload"
+          fi
+          
+          # Build the binary
+          go build -ldflags "-w -s" -o "dist/${BINARY_NAME}" ./cmd/loadtest
+      
+      - name: Package binary
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          PACKAGE_NAME="goload-${VERSION}-${{ matrix.suffix }}"
+          
+          # Create archive based on OS
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -j "${PACKAGE_NAME}.zip" dist/goload.exe
+            echo "ARTIFACT_PATH=${PACKAGE_NAME}.zip" >> $GITHUB_ENV
+          else
+            tar -czf "${PACKAGE_NAME}.tar.gz" -C dist goload
+            echo "ARTIFACT_PATH=${PACKAGE_NAME}.tar.gz" >> $GITHUB_ENV
+          fi
+          
+          # Generate checksum
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            sha256sum "${PACKAGE_NAME}.zip" > "${PACKAGE_NAME}.zip.sha256"
+            echo "CHECKSUM_PATH=${PACKAGE_NAME}.zip.sha256" >> $GITHUB_ENV
+          else
+            sha256sum "${PACKAGE_NAME}.tar.gz" > "${PACKAGE_NAME}.tar.gz.sha256"
+            echo "CHECKSUM_PATH=${PACKAGE_NAME}.tar.gz.sha256" >> $GITHUB_ENV
+          fi
+      
+      - name: Upload binary to release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            goload-linux-amd64.tar.gz
-            goload-darwin-amd64.tar.gz
-            goload-windows-amd64.zip
-            checksums.txt
+            ${{ env.ARTIFACT_PATH }}
+            ${{ env.CHECKSUM_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Create a combined checksums file as a separate job
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Combine checksums
+        run: |
+          find . -name "*.sha256" -exec cat {} \; > checksums.txt
+          
+      - name: Upload checksums to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
