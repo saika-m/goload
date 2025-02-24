@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/saika-m/goload/pkg/config"
+	"github.com/google/uuid"
+	"github.com/saika-m/goload/internal/common"
 	"github.com/saika-m/goload/pkg/master"
 	"github.com/saika-m/goload/pkg/worker"
 	"github.com/spf13/cobra"
@@ -100,16 +103,33 @@ func startCmd() *cobra.Command {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			// Create configuration
-			cfg := &config.TestConfig{
+			// Convert string protocol to common.Protocol type
+			testProtocol := common.Protocol(strings.ToUpper(protocol))
+
+			// Create test configuration
+			cfg := &common.TestConfig{
+				TestID:       uuid.New().String(),
 				VirtualUsers: vUsers,
 				Duration:     duration,
 				Target:       target,
-				Protocol:     protocol,
+				Protocol:     testProtocol,
+				Scenarios: []common.ScenarioConfig{
+					{
+						Name:   "default",
+						Weight: 1.0,
+						Steps: []common.RequestStep{
+							{
+								Name:   "default",
+								Method: "GET",
+								Path:   target,
+							},
+						},
+					},
+				},
 			}
 
-			// Create master node
-			m, err := master.NewMaster(cfg)
+			// Create master node with default config
+			m, err := master.NewMaster(common.DefaultMasterConfig())
 			if err != nil {
 				return fmt.Errorf("failed to create master: %w", err)
 			}
@@ -121,14 +141,22 @@ func startCmd() *cobra.Command {
 			go func() {
 				<-sigChan
 				log.Println("Received shutdown signal. Stopping test...")
+				if err := m.StopTest(cfg.TestID); err != nil {
+					log.Printf("Error stopping test: %v", err)
+				}
 				cancel()
 			}()
 
 			// Start the test
-			if err := m.Start(ctx); err != nil {
-				return fmt.Errorf("test failed: %w", err)
+			test, err := m.StartTest(ctx, cfg)
+			if err != nil {
+				return fmt.Errorf("failed to start test: %w", err)
 			}
 
+			log.Printf("Started test with ID: %s\n", test.Config.TestID)
+
+			// Wait for test completion or cancellation
+			<-ctx.Done()
 			return nil
 		},
 	}
@@ -152,12 +180,12 @@ func stopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop a running load test",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := master.NewMaster(nil)
+			m, err := master.NewMaster(common.DefaultMasterConfig())
 			if err != nil {
 				return fmt.Errorf("failed to create master: %w", err)
 			}
 
-			if err := m.Stop(testID); err != nil {
+			if err := m.StopTest(testID); err != nil {
 				return fmt.Errorf("failed to stop test: %w", err)
 			}
 
@@ -180,12 +208,12 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Get the status of a running test",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := master.NewMaster(nil)
+			m, err := master.NewMaster(common.DefaultMasterConfig())
 			if err != nil {
 				return fmt.Errorf("failed to create master: %w", err)
 			}
 
-			status, err := m.GetStatus(testID)
+			status, err := m.GetTestStatus(testID)
 			if err != nil {
 				return fmt.Errorf("failed to get test status: %w", err)
 			}
@@ -214,6 +242,9 @@ func workerCmd() *cobra.Command {
 		masterAddr string
 		capacity   int
 		workDir    string
+		workerID   string
+		maxCPU     float64
+		maxMemory  float64
 	)
 
 	cmd := &cobra.Command{
@@ -228,11 +259,44 @@ func workerCmd() *cobra.Command {
 				return fmt.Errorf("failed to create work directory: %w", err)
 			}
 
-			// Create worker configuration
-			cfg := &config.WorkerConfig{
-				MasterAddress: masterAddr,
-				Capacity:      capacity,
-				WorkDir:       workDir,
+			// If no worker ID is provided, generate one
+			if workerID == "" {
+				workerID = fmt.Sprintf("worker-%s", uuid.New().String()[:8])
+			}
+
+			// Get hostname
+			hostname, err := os.Hostname()
+			if err != nil {
+				hostname = workerID
+			}
+
+			// Check environment variables for CPU/Memory limits
+			if envCPU := os.Getenv("MAX_CPU"); envCPU != "" {
+				if val, err := strconv.ParseFloat(envCPU, 64); err == nil {
+					maxCPU = val
+				}
+			}
+			if envMem := os.Getenv("MAX_MEMORY"); envMem != "" {
+				if val, err := strconv.ParseFloat(envMem, 64); err == nil {
+					maxMemory = val
+				}
+			}
+
+			// Create worker configuration with all required fields
+			cfg := &common.WorkerConfig{
+				ID:                workerID,
+				Hostname:          hostname,
+				MasterAddress:     masterAddr,
+				Capacity:          capacity,
+				WorkDir:           workDir,
+				MaxCPUPercent:     maxCPU,
+				MaxMemoryPercent:  maxMemory,
+				HeartbeatInterval: 5 * time.Second, // Add reasonable defaults
+				MaxRetries:        3,
+				MaxIdleConns:      100,
+				IdleConnTimeout:   90 * time.Second,
+				DialTimeout:       5 * time.Second,
+				KeepAlive:         30 * time.Second,
 			}
 
 			// Create and start worker
@@ -262,8 +326,11 @@ func workerCmd() *cobra.Command {
 
 	// Add worker-specific flags
 	cmd.Flags().StringVar(&masterAddr, "master", "", "master node address")
+	cmd.Flags().StringVar(&workerID, "id", "", "worker ID (generated if not provided)")
 	cmd.Flags().IntVar(&capacity, "capacity", 100, "maximum number of virtual users")
 	cmd.Flags().StringVar(&workDir, "work-dir", filepath.Join(os.TempDir(), "goload-worker"), "worker working directory")
+	cmd.Flags().Float64Var(&maxCPU, "max-cpu", 80.0, "maximum CPU percentage to use")
+	cmd.Flags().Float64Var(&maxMemory, "max-memory", 80.0, "maximum memory percentage to use")
 
 	cmd.MarkFlagRequired("master")
 

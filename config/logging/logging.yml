@@ -1,0 +1,80 @@
+logging:
+  level: INFO
+  format: json
+  output:
+    console:
+      enabled: true
+      format: json
+    file:
+      enabled: true
+      path: /var/log/goload
+      max_size: 100MB
+      max_age: 7
+      max_backups: 5
+      compress: true
+
+  # Field customization
+  fields:
+    service: goload
+    environment: ${GO_ENV:-development}
+
+  # Special handlers
+  handlers:
+    error:
+      level: ERROR
+      output:
+        file:
+          path: /var/log/goload/error.log
+          max_size: 100MB
+          max_age: 30
+          max_backups: 10
+          compress: true
+        
+    access:
+      level: INFO
+      output:
+        file:
+          path: /var/log/goload/access.log
+          max_size: 100MB
+          max_age: 7
+          max_backups: 5
+          compress: true
+
+  # Component-specific settings
+  components:
+    master:
+      level: INFO
+      fields:
+        component: master
+
+    worker:
+      level: INFO
+      fields:
+        component: worker
+
+    metrics:
+      level: INFO
+      fields:
+        component: metrics
+
+  # Request tracking
+  request_tracking:
+    enabled: true
+    include_headers:
+      - User-Agent
+      - X-Request-ID
+      - X-Forwarded-For
+    exclude_paths:
+      - /health
+      - /metrics
+
+  # Sampling configuration
+  sampling:
+    initial: 1
+    thereafter: 100
+    
+  # Performance logging
+  performance:
+    slow_threshold: 1s
+    enabled: true
+    include_stack_trace: true

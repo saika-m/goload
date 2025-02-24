@@ -9,28 +9,21 @@ import (
 	"github.com/saika-m/goload/internal/common"
 )
 
-// Scheduler handles worker allocation and load distribution
-type Scheduler struct {
-	orchestrator *Orchestrator
+// Make sure our Scheduler matches the common.Scheduler interface
+type scheduler struct {
+	orchestrator *common.Orchestrator
 	mu           sync.RWMutex
 }
 
 // NewScheduler creates a new scheduler
-func NewScheduler(orchestrator *Orchestrator) *Scheduler {
-	return &Scheduler{
+func NewScheduler(orchestrator *common.Orchestrator) common.Scheduler {
+	return &scheduler{
 		orchestrator: orchestrator,
 	}
 }
 
-// WorkerAllocation represents the allocation of virtual users to a worker
-type WorkerAllocation struct {
-	WorkerID     string
-	VirtualUsers int
-	Location     string
-}
-
 // AllocateWorkers distributes virtual users across available workers
-func (s *Scheduler) AllocateWorkers(test *Test) (map[string]int, error) {
+func (s *scheduler) AllocateWorkers(test *common.Test) (map[string]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -88,21 +81,18 @@ func (s *Scheduler) AllocateWorkers(test *Test) (map[string]int, error) {
 }
 
 // getAvailableWorkers returns a list of workers that can accept new tests
-func (s *Scheduler) getAvailableWorkers() []*WorkerState {
-	s.orchestrator.mu.RLock()
-	defer s.orchestrator.mu.RUnlock()
-
-	available := make([]*WorkerState, 0)
-	for _, worker := range s.orchestrator.workers {
+func (s *scheduler) getAvailableWorkers() []*common.WorkerState {
+	workers := make([]*common.WorkerState, 0)
+	for _, worker := range s.orchestrator.Workers {
 		if s.isWorkerAvailable(worker) {
-			available = append(available, worker)
+			workers = append(workers, worker)
 		}
 	}
-	return available
+	return workers
 }
 
 // isWorkerAvailable checks if a worker can accept new tests
-func (s *Scheduler) isWorkerAvailable(worker *WorkerState) bool {
+func (s *scheduler) isWorkerAvailable(worker *common.WorkerState) bool {
 	// Check if worker is idle
 	if worker.Status != "idle" && worker.Status != "ready" {
 		return false
@@ -127,23 +117,17 @@ func (s *Scheduler) isWorkerAvailable(worker *WorkerState) bool {
 }
 
 // RebalanceWorkers redistributes load when workers join or leave
-func (s *Scheduler) RebalanceWorkers(testID string) error {
+func (s *scheduler) RebalanceWorkers(testID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	test, err := s.orchestrator.GetTest(testID)
-	if err != nil {
-		return err
+	test, exists := s.orchestrator.Tests[testID]
+	if !exists {
+		return fmt.Errorf("test not found: %s", testID)
 	}
 
 	if test.Status.State != common.TestStateRunning {
 		return fmt.Errorf("test is not running")
-	}
-
-	// Get current allocation
-	currentAllocation := make(map[string]int)
-	for workerID, state := range test.Workers {
-		currentAllocation[workerID] = state.ActiveUsers
 	}
 
 	// Calculate new allocation
@@ -152,58 +136,82 @@ func (s *Scheduler) RebalanceWorkers(testID string) error {
 		return err
 	}
 
+	// Apply the new allocation
+	return s.applyAllocation(test, newAllocation)
+}
+
+func (s *scheduler) applyAllocation(test *common.Test, newAllocation map[string]int) error {
+	// Get current allocation
+	currentAllocation := make(map[string]int)
+	for workerID, state := range test.Workers {
+		currentAllocation[workerID] = state.ActiveUsers
+	}
+
 	// Calculate differences
-	toAdd := make(map[string]int)
-	toRemove := make(map[string]int)
-
 	for workerID, newCount := range newAllocation {
-		if currentCount, exists := currentAllocation[workerID]; exists {
-			if newCount > currentCount {
-				toAdd[workerID] = newCount - currentCount
-			} else if newCount < currentCount {
-				toRemove[workerID] = currentCount - newCount
+		currentCount := currentAllocation[workerID]
+		if newCount > currentCount {
+			if err := s.addUsersToWorker(test, workerID, newCount-currentCount); err != nil {
+				return err
 			}
-		} else {
-			toAdd[workerID] = newCount
+		} else if newCount < currentCount {
+			if err := s.removeUsersFromWorker(test, workerID, currentCount-newCount); err != nil {
+				return err
+			}
 		}
 	}
 
-	for workerID, currentCount := range currentAllocation {
+	// Remove workers not in new allocation
+	for workerID := range currentAllocation {
 		if _, exists := newAllocation[workerID]; !exists {
-			toRemove[workerID] = currentCount
-		}
-	}
-
-	// Apply changes
-	for workerID, count := range toRemove {
-		if err := s.removeUsersFromWorker(test, workerID, count); err != nil {
-			return err
-		}
-	}
-
-	for workerID, count := range toAdd {
-		if err := s.addUsersToWorker(test, workerID, count); err != nil {
-			return err
+			if err := s.removeUsersFromWorker(test, workerID, currentAllocation[workerID]); err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
 }
 
-func (s *Scheduler) removeUsersFromWorker(test *Test, workerID string, count int) error {
-	worker, exists := s.orchestrator.workers[workerID]
+func (s *scheduler) addUsersToWorker(test *common.Test, workerID string, count int) error {
+	worker, exists := s.orchestrator.Workers[workerID]
 	if !exists {
 		return fmt.Errorf("worker not found: %s", workerID)
 	}
 
-	// Update worker state
+	if worker.ActiveUsers+count > worker.Info.Capacity {
+		return fmt.Errorf("worker capacity exceeded")
+	}
+
+	worker.ActiveUsers += count
+	worker.Status = "running"
+	worker.CurrentTestID = test.Config.TestID
+
+	if _, exists := test.Workers[workerID]; !exists {
+		test.Workers[workerID] = &common.WorkerState{
+			Info:        worker.Info,
+			Status:      "running",
+			ActiveUsers: count,
+		}
+	} else {
+		test.Workers[workerID].ActiveUsers += count
+	}
+
+	return nil
+}
+
+func (s *scheduler) removeUsersFromWorker(test *common.Test, workerID string, count int) error {
+	worker, exists := s.orchestrator.Workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker not found: %s", workerID)
+	}
+
 	worker.ActiveUsers -= count
 	if worker.ActiveUsers == 0 {
 		worker.Status = "idle"
 		worker.CurrentTestID = ""
 	}
 
-	// Update test state
 	if testWorker, exists := test.Workers[workerID]; exists {
 		testWorker.ActiveUsers -= count
 		if testWorker.ActiveUsers == 0 {
@@ -211,67 +219,5 @@ func (s *Scheduler) removeUsersFromWorker(test *Test, workerID string, count int
 		}
 	}
 
-	// TODO: Send gRPC command to worker to stop users
-
 	return nil
-}
-
-func (s *Scheduler) addUsersToWorker(test *Test, workerID string, count int) error {
-	worker, exists := s.orchestrator.workers[workerID]
-	if !exists {
-		return fmt.Errorf("worker not found: %s", workerID)
-	}
-
-	// Check capacity
-	if worker.ActiveUsers+count > worker.Info.Capacity {
-		return fmt.Errorf("worker capacity exceeded")
-	}
-
-	// Update worker state
-	worker.ActiveUsers += count
-	worker.Status = "running"
-	worker.CurrentTestID = test.Config.TestID
-
-	// Update test state
-	if _, exists := test.Workers[workerID]; !exists {
-		test.Workers[workerID] = &WorkerState{
-			Info:        worker.Info,
-			ActiveUsers: count,
-			Status:      "running",
-		}
-	} else {
-		test.Workers[workerID].ActiveUsers += count
-	}
-
-	// TODO: Send gRPC command to worker to start users
-
-	return nil
-}
-
-// HandleWorkerFailure manages redistribution of load when a worker fails
-func (s *Scheduler) HandleWorkerFailure(workerID string) error {
-	s.orchestrator.mu.Lock()
-	defer s.orchestrator.mu.Unlock()
-
-	worker, exists := s.orchestrator.workers[workerID]
-	if !exists {
-		return fmt.Errorf("worker not found: %s", workerID)
-	}
-
-	if worker.CurrentTestID == "" {
-		return nil
-	}
-
-	// Get the affected test
-	test, err := s.orchestrator.GetTest(worker.CurrentTestID)
-	if err != nil {
-		return err
-	}
-
-	// Remove the failed worker
-	delete(s.orchestrator.workers, workerID)
-	delete(test.Workers, workerID)
-
-	// Attempt to rebalance the test
-	return s.RebalanceWorkers(test.Config.TestID)
 }

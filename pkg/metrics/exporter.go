@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -25,21 +26,22 @@ const (
 
 // Exporter handles exporting metrics to various backends
 type Exporter struct {
-	aggregator *Aggregator
-	format     ExportFormat
-	interval   time.Duration
-	endpoint   string
-	httpClient *http.Client
-	registry   *prometheus.Registry
-	metrics    map[string]*prometheus.GaugeVec
-	mu         sync.RWMutex
+	aggregator   *Aggregator
+	format       ExportFormat
+	interval     time.Duration
+	endpoint     string
+	httpClient   *http.Client
+	registry     *prometheus.Registry
+	metrics      map[string]*prometheus.GaugeVec
+	influxClient influxdb2.Client
+	mu           sync.RWMutex
 }
 
 // NewExporter creates a new metrics exporter
 func NewExporter(aggregator *Aggregator, format ExportFormat, endpoint string, interval time.Duration) *Exporter {
 	registry := prometheus.NewRegistry()
 
-	return &Exporter{
+	exp := &Exporter{
 		aggregator: aggregator,
 		format:     format,
 		endpoint:   endpoint,
@@ -48,6 +50,14 @@ func NewExporter(aggregator *Aggregator, format ExportFormat, endpoint string, i
 		registry:   registry,
 		metrics:    make(map[string]*prometheus.GaugeVec),
 	}
+
+	// Initialize InfluxDB client if needed
+	if format == FormatInfluxDB {
+		// Assuming endpoint format: http://localhost:8086?org=myorg&bucket=mybucket&token=mytoken
+		exp.influxClient = influxdb2.NewClient(endpoint, "")
+	}
+
+	return exp
 }
 
 // Start begins the metrics export process
@@ -59,6 +69,13 @@ func (e *Exporter) Start(ctx context.Context) error {
 
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
+
+	// Cleanup when done
+	defer func() {
+		if e.influxClient != nil {
+			e.influxClient.Close()
+		}
+	}()
 
 	for {
 		select {
@@ -157,38 +174,59 @@ func (e *Exporter) startPrometheusServer() {
 
 // exportInfluxDB exports metrics to InfluxDB
 func (e *Exporter) exportInfluxDB(metrics map[string]*AggregatedMetric) error {
-	points := make([]influxdb.Point, 0, len(metrics))
-
-	for key, metric := range metrics {
-		tags := map[string]string{
-			"metric": key,
-		}
-
-		fields := map[string]interface{}{
-			"count": metric.Count,
-			"min":   metric.Min,
-			"max":   metric.Max,
-			"mean":  metric.Mean,
-			"p50":   metric.P50,
-			"p90":   metric.P90,
-			"p95":   metric.P95,
-			"p99":   metric.P99,
-			"rate":  metric.Rate,
-		}
-
-		point := influxdb.Point{
-			Measurement: "load_test_metrics",
-			Tags:        tags,
-			Fields:      fields,
-			Time:        metric.Timestamp,
-		}
-
-		points = append(points, point)
+	if e.influxClient == nil {
+		return fmt.Errorf("InfluxDB client not initialized")
 	}
 
-	// Write batch to InfluxDB
-	// Note: Implementation depends on the specific InfluxDB client version
-	// This is a placeholder for the actual implementation
+	// Parse endpoint URL to extract org and bucket
+	// Assuming endpoint format: http://localhost:8086?org=myorg&bucket=mybucket
+	parts := strings.Split(e.endpoint, "?")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid InfluxDB endpoint format")
+	}
+
+	params := make(map[string]string)
+	for _, param := range strings.Split(parts[1], "&") {
+		kv := strings.Split(param, "=")
+		if len(kv) == 2 {
+			params[kv[0]] = kv[1]
+		}
+	}
+
+	org := params["org"]
+	bucket := params["bucket"]
+	if org == "" || bucket == "" {
+		return fmt.Errorf("missing org or bucket in InfluxDB endpoint")
+	}
+
+	// Get write API
+	writeAPI := e.influxClient.WriteAPIBlocking(org, bucket)
+
+	// Create points for each metric
+	for name, metric := range metrics {
+		p := influxdb2.NewPoint(
+			"load_test_metrics",
+			map[string]string{"metric": name},
+			map[string]interface{}{
+				"count": metric.Count,
+				"min":   metric.Min,
+				"max":   metric.Max,
+				"mean":  metric.Mean,
+				"p50":   metric.P50,
+				"p90":   metric.P90,
+				"p95":   metric.P95,
+				"p99":   metric.P99,
+				"rate":  metric.Rate,
+			},
+			metric.Timestamp,
+		)
+
+		// Write point
+		if err := writeAPI.WritePoint(context.Background(), p); err != nil {
+			return fmt.Errorf("failed to write point: %w", err)
+		}
+	}
+
 	return nil
 }
 

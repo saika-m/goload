@@ -37,23 +37,31 @@ make build
 
 ### Running a Simple Test
 
-1. Start the master node:
+1. Start all services using Docker Compose:
 ```bash
-./bin/master
+docker-compose up -d
 ```
 
-2. Start one or more worker nodes:
+2. Run a test:
 ```bash
-./bin/worker --master localhost:8080
+docker-compose run runner ./goload start \
+  --target http://your-api.com \
+  --protocol http \
+  --duration 5m \
+  --vusers 100
 ```
 
-3. Create a test configuration:
+### Test Configuration File
+
+Create a test configuration:
 ```yaml
 # test.yaml
+name: API Load Test
 virtual_users: 100
 duration: 5m
 target: http://your-api.com
 protocol: HTTP
+
 scenarios:
   - name: basic-scenario
     weight: 1
@@ -64,57 +72,35 @@ scenarios:
         think_time: 1s
 ```
 
-4. Run the test:
+## Available Commands
+
+### Master Node (Default)
 ```bash
-./bin/goload start --config test.yaml
+./goload
 ```
 
-### Using Docker Compose
-
-To run a complete distributed testing environment:
-
+### Worker Node
 ```bash
-# Start the environment
-docker-compose up -d
-
-# Scale workers as needed
-docker-compose up -d --scale worker=5
+./goload worker --master master:8080 [--id worker-1] [--capacity 100] [--max-cpu 80] [--max-memory 80]
 ```
 
-## Configuration
-
-### Master Node Configuration
-
-```yaml
-# config/master.yaml
-api:
-  port: 8080
-  host: "0.0.0.0"
-
-metrics:
-  port: 9090
-  interval: "1s"
-
-storage:
-  path: "./data"
-  retention: "7d"
+### Start Test
+```bash
+./goload start \
+  --target http://example.com \
+  --protocol http \
+  --duration 5m \
+  --vusers 100
 ```
 
-### Worker Node Configuration
+### Status Check
+```bash
+./goload status --test-id <test-id>
+```
 
-```yaml
-# config/worker.yaml
-master:
-  address: "localhost:8080"
-  heartbeat_interval: "5s"
-
-execution:
-  capacity: 1000
-  max_retry: 3
-
-resources:
-  cpu_limit: 80
-  memory_limit: 80
+### Stop Test
+```bash
+./goload stop --test-id <test-id>
 ```
 
 ## Test Scenarios
@@ -197,51 +183,6 @@ Access the dashboards:
 - Grafana: http://localhost:3000 (default credentials: admin/admin)
 - Prometheus: http://localhost:9091
 
-## API Reference
-
-### Master Node API
-
-#### Start Test
-```http
-POST /api/v1/tests
-Content-Type: application/json
-
-{
-  "virtual_users": 100,
-  "duration": "5m",
-  "target": "http://example.com",
-  "protocol": "HTTP",
-  "scenarios": [...]
-}
-```
-
-#### Stop Test
-```http
-DELETE /api/v1/tests/{test_id}
-```
-
-#### Get Test Status
-```http
-GET /api/v1/tests/{test_id}/status
-```
-
-### Worker Node API
-
-#### Register Worker
-```http
-POST /api/v1/workers
-Content-Type: application/json
-
-{
-  "id": "worker-1",
-  "capacity": 1000,
-  "resources": {
-    "cpu_cores": 4,
-    "memory_mb": 8192
-  }
-}
-```
-
 ## Development
 
 ### Running Tests
@@ -264,18 +205,6 @@ make format
 make lint
 ```
 
-### Building for Different Platforms
-
-```bash
-# Build for all platforms
-make build-all
-
-# Build for specific platform
-make build-linux
-make build-darwin
-make build-windows
-```
-
 ## Contributing
 
 1. Fork the repository
@@ -286,20 +215,8 @@ make build-windows
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
 
 ## Tags
 
-golang
-
-load-testing
-
-performance-testing
-
-distributed-systems
-
-stress-testing
-
-benchmarking
-
-testing-tools
+golang, load-testing, performance-testing, distributed-systems, stress-testing, benchmarking, testing-tools

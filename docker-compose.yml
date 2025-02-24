@@ -1,25 +1,18 @@
-version: '3.8'
-
 services:
   master:
     build:
       context: .
       dockerfile: Dockerfile
     image: goload:latest
-    command: ["./master"]
+    command: ["./goload", "worker", "--mode", "master"]
     ports:
-      - "8080:8080"  # API port
-      - "9090:9090"  # Metrics port
+      - "8080:8080"
+      - "9090:9090"
     environment:
       - GO_ENV=development
       - LOG_LEVEL=debug
     volumes:
       - ./config:/app/config
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
     networks:
       - goload-network
 
@@ -28,37 +21,42 @@ services:
       context: .
       dockerfile: Dockerfile
     image: goload:latest
-    command: ["./worker", "--master", "master:8080"]
+    entrypoint: ["/app/worker-entrypoint.sh"]
     environment:
       - GO_ENV=development
       - LOG_LEVEL=debug
-      - MASTER_ADDR=master:8080
+    volumes:
+      - ./config:/app/config
     depends_on:
       - master
     deploy:
       replicas: 2
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9091/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
+    networks:
+      - goload-network
+
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: goload:latest
+    command: ["/bin/sh", "-c", "sleep 10 && ./goload start --target http://example.com --protocol http --duration 1h --vusers 10"]
+    environment:
+      - GO_ENV=development
+      - LOG_LEVEL=debug
+    depends_on:
+      - master
+      - worker
     networks:
       - goload-network
 
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./config/prometheus:/etc/prometheus
+      - ./config/prometheus:/etc/prometheus:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
       - "9091:9090"
     networks:
@@ -67,11 +65,13 @@ services:
   grafana:
     image: grafana/grafana:latest
     volumes:
-      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/grafana/dashboards:/etc/grafana/dashboards:ro
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_CONFIG=/etc/grafana/provisioning/grafana.ini
     ports:
       - "3000:3000"
     depends_on:
@@ -79,10 +79,9 @@ services:
     networks:
       - goload-network
 
+networks:
+  goload-network:
+
 volumes:
   prometheus_data:
   grafana_data:
-
-networks:
-  goload-network:
-    driver: bridge

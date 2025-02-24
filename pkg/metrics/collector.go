@@ -9,15 +9,17 @@ import (
 	"github.com/saika-m/goload/internal/common"
 )
 
-// MetricType defines the type of metric
-type MetricType string
+// defined in types.go
+// type MetricType string
 
+/*
 const (
 	Counter   MetricType = "counter"
 	Gauge     MetricType = "gauge"
 	Histogram MetricType = "histogram"
 	Timer     MetricType = "timer"
 )
+*/
 
 // Collector handles metric collection and aggregation
 type Collector struct {
@@ -69,37 +71,37 @@ func (c *Collector) processMetric(metric *common.Metric) {
 	key := generateMetricKey(metric.Name, metric.Labels)
 
 	switch metric.Type {
-	case Timer:
+	case common.Timer:
 		timer := c.getOrCreateTimer(key)
 		timer.Update(time.Duration(metric.Value))
 
-	case Counter:
+	case common.Counter:
 		counter := c.getOrCreateCounter(key)
 		counter.Inc(int64(metric.Value))
 
-	case Gauge:
+	case common.Gauge:
 		gauge := c.getOrCreateGauge(key)
 		gauge.Update(int64(metric.Value))
 
-	case Histogram:
+	case common.Histogram:
 		histogram := c.getOrCreateHistogram(key)
 		histogram.Update(int64(metric.Value))
 	}
 }
 
 // GetMetric retrieves a metric by name and type
-func (c *Collector) GetMetric(name string, metricType MetricType) interface{} {
+func (c *Collector) GetMetric(name string, metricType common.MetricType) interface{} {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	switch metricType {
-	case Timer:
+	case common.Timer:
 		return c.timers[name]
-	case Counter:
+	case common.Counter:
 		return c.counters[name]
-	case Gauge:
+	case common.Gauge:
 		return c.gauges[name]
-	case Histogram:
+	case common.Histogram:
 		return c.histograms[name]
 	default:
 		return nil
@@ -232,7 +234,7 @@ func (c *Collector) RecordResponse(result *common.RequestResult) {
 	c.metricsChan <- &common.Metric{
 		Name:      "response_time",
 		Value:     float64(result.Duration.Milliseconds()),
-		Type:      Timer,
+		Type:      common.Timer,
 		Labels:    labels,
 		Timestamp: result.StartTime,
 	}
@@ -241,7 +243,7 @@ func (c *Collector) RecordResponse(result *common.RequestResult) {
 	c.metricsChan <- &common.Metric{
 		Name:      "requests_total",
 		Value:     1,
-		Type:      Counter,
+		Type:      common.Counter,
 		Labels:    labels,
 		Timestamp: result.StartTime,
 	}
@@ -251,7 +253,7 @@ func (c *Collector) RecordResponse(result *common.RequestResult) {
 		c.metricsChan <- &common.Metric{
 			Name:      "errors_total",
 			Value:     1,
-			Type:      Counter,
+			Type:      common.Counter,
 			Labels:    labels,
 			Timestamp: result.StartTime,
 		}
@@ -261,7 +263,7 @@ func (c *Collector) RecordResponse(result *common.RequestResult) {
 	c.metricsChan <- &common.Metric{
 		Name:      "bytes_sent",
 		Value:     float64(result.BytesSent),
-		Type:      Counter,
+		Type:      common.Counter,
 		Labels:    labels,
 		Timestamp: result.StartTime,
 	}
@@ -269,7 +271,7 @@ func (c *Collector) RecordResponse(result *common.RequestResult) {
 	c.metricsChan <- &common.Metric{
 		Name:      "bytes_received",
 		Value:     float64(result.BytesReceived),
-		Type:      Counter,
+		Type:      common.Counter,
 		Labels:    labels,
 		Timestamp: result.StartTime,
 	}

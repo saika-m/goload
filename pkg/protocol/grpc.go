@@ -23,6 +23,7 @@ type GRPCResponse struct {
 	BytesSent     int64
 	Error         error
 	Response      interface{}
+	Duration      time.Duration
 }
 
 // GRPCClient handles gRPC protocol requests
@@ -89,6 +90,7 @@ func (c *GRPCClient) Execute(ctx context.Context, step common.RequestStep) (*GRP
 		BytesSent:     requestSize,
 		Error:         err,
 		Response:      &response,
+		Duration:      duration,
 	}, nil
 }
 

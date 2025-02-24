@@ -1,0 +1,29 @@
+groups:
+  - name: load_test_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(goload_requests_errors_total[1m]) / rate(goload_requests_total[1m]) > 0.1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 10% for the last minute"
+
+      - alert: WorkerDown
+        expr: up{job="goload-workers"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker node down"
+          description: "Worker node has been down for 30 seconds"
+
+      - alert: HighLatency
+        expr: rate(goload_request_duration_seconds_sum[5m]) / rate(goload_request_duration_seconds_count[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "Average request latency is above 1 second for 5 minutes"

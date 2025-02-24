@@ -8,8 +8,6 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 BINARY_NAME=goload
-MASTER_BINARY=master
-WORKER_BINARY=worker
 
 # Build flags
 LDFLAGS=-ldflags "-w -s"
@@ -22,8 +20,6 @@ all: clean deps proto build
 
 build: 
 	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/loadtest
-	$(GOBUILD) $(LDFLAGS) -o bin/$(MASTER_BINARY) ./cmd/master
-	$(GOBUILD) $(LDFLAGS) -o bin/$(WORKER_BINARY) ./cmd/worker
 
 test:
 	$(GOTEST) -v ./...
@@ -31,8 +27,6 @@ test:
 clean:
 	$(GOCLEAN)
 	rm -f bin/$(BINARY_NAME)
-	rm -f bin/$(MASTER_BINARY)
-	rm -f bin/$(WORKER_BINARY)
 	rm -rf dist/
 
 deps:
@@ -54,11 +48,14 @@ docker-clean:
 	docker-compose down -v
 	docker rmi $(DOCKER_IMAGE):$(DOCKER_TAG)
 
+run:
+	./bin/$(BINARY_NAME)
+
 run-master:
-	./bin/$(MASTER_BINARY)
+	./bin/$(BINARY_NAME) --mode master
 
 run-worker:
-	./bin/$(WORKER_BINARY)
+	./bin/$(BINARY_NAME) --mode worker
 
 lint:
 	golangci-lint run
@@ -75,17 +72,11 @@ install-tools:
 # Cross compilation
 build-linux:
 	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/linux/$(BINARY_NAME) ./cmd/loadtest
-	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/linux/$(MASTER_BINARY) ./cmd/master
-	GOOS=linux GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/linux/$(WORKER_BINARY) ./cmd/worker
 
 build-darwin:
 	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/darwin/$(BINARY_NAME) ./cmd/loadtest
-	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/darwin/$(MASTER_BINARY) ./cmd/master
-	GOOS=darwin GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/darwin/$(WORKER_BINARY) ./cmd/worker
 
 build-windows:
 	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/windows/$(BINARY_NAME).exe ./cmd/loadtest
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/windows/$(MASTER_BINARY).exe ./cmd/master
-	GOOS=windows GOARCH=amd64 $(GOBUILD) $(LDFLAGS) -o dist/windows/$(WORKER_BINARY).exe ./cmd/worker
 
 build-all: build-linux build-darwin build-windows

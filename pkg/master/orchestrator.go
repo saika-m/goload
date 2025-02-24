@@ -7,275 +7,208 @@ import (
 	"time"
 
 	"github.com/saika-m/goload/internal/common"
-	"github.com/saika-m/goload/pkg/config"
 )
 
-// Test represents a running or completed load test
-type Test struct {
-	Config    *config.TestConfig
-	Status    common.TestStatus
-	StartTime time.Time
-	EndTime   time.Time
-	Workers   map[string]*WorkerState
-	Results   []*common.RequestResult
-	mu        sync.RWMutex
+// Orchestrator manages the overall load test execution
+type orchestratorImpl struct {
+	*common.Orchestrator
+	config *common.MasterConfig
 }
 
-// WorkerState tracks the state of a worker node
-type WorkerState struct {
-	Info          *common.WorkerInfo
-	LastHeartbeat time.Time
-	ActiveUsers   int
-	Status        string
-	CurrentTestID string
-}
-
-// Orchestrator manages the execution of load tests
-type Orchestrator struct {
-	cfg       *config.MasterConfig
-	tests     map[string]*Test
-	workers   map[string]*WorkerState
-	scheduler *Scheduler
-	metricsCh chan common.MetricsBatch
-	resultsCh chan *common.RequestResult
-	mu        sync.RWMutex
-}
-
-// NewOrchestrator creates a new test orchestrator
-func NewOrchestrator(cfg *config.MasterConfig) *Orchestrator {
-	return &Orchestrator{
-		cfg:       cfg,
-		tests:     make(map[string]*Test),
-		workers:   make(map[string]*WorkerState),
-		metricsCh: make(chan common.MetricsBatch, 1000),
-		resultsCh: make(chan *common.RequestResult, 1000),
+// NewOrchestrator creates a new orchestrator instance
+func NewOrchestrator(cfg *common.MasterConfig) *common.Orchestrator {
+	o := &orchestratorImpl{
+		Orchestrator: &common.Orchestrator{
+			Workers: make(map[string]*common.WorkerState),
+			Tests:   make(map[string]*common.Test),
+			Mu:      sync.RWMutex{},
+		},
+		config: cfg,
 	}
+
+	// Set the orchestration methods
+	o.Orchestrator.OrchestrationMethods = o
+
+	// Initialize scheduler with the common orchestrator
+	o.Orchestrator.Scheduler = NewScheduler(o.Orchestrator)
+
+	return o.Orchestrator
 }
 
-// StartTest begins a new load test
-func (o *Orchestrator) StartTest(ctx context.Context, cfg *config.TestConfig) (*Test, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// StartTest starts a new load test
+func (o *orchestratorImpl) StartTest(ctx context.Context, cfg *common.TestConfig) (*common.Test, error) {
+	o.Mu.Lock()
+	defer o.Mu.Unlock()
 
 	// Validate test configuration
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, &common.LoadTestError{
+			Code:    common.ErrConfigInvalid,
+			Message: "invalid test configuration",
+			Err:     err,
+		}
 	}
 
-	// Create new test
-	test := &Test{
-		Config: cfg.WithDefaults(),
-		Status: common.TestStatus{
-			TestID: cfg.TestID,
-			State:  common.TestStatePending,
+	// Create new test instance
+	test := &common.Test{
+		Config: cfg,
+		Status: &common.TestStatus{
+			TestID:  cfg.TestID,
+			State:   common.TestStatePending,
+			Message: "Initializing test",
 		},
+		Workers:   make(map[string]*common.WorkerState),
 		StartTime: time.Now(),
-		Workers:   make(map[string]*WorkerState),
-		Results:   make([]*common.RequestResult, 0),
 	}
 
-	// Store test
-	o.tests[test.Config.TestID] = test
+	// Allocate workers
+	allocation, err := o.Scheduler.AllocateWorkers(test)
+	if err != nil {
+		return nil, &common.LoadTestError{
+			Code:    common.ErrWorkerUnavailable,
+			Message: "failed to allocate workers",
+			Err:     err,
+		}
+	}
 
-	// Start test goroutine
-	go o.runTest(ctx, test)
+	// Update test and worker states
+	for workerID, count := range allocation {
+		worker := o.Workers[workerID]
+		worker.Status = "running"
+		worker.ActiveUsers = count
+		worker.CurrentTestID = cfg.TestID
+
+		test.Workers[workerID] = &common.WorkerState{
+			Info:        worker.Info,
+			Status:      "running",
+			ActiveUsers: count,
+		}
+	}
+
+	test.Status.State = common.TestStateRunning
+	test.Status.Message = "Test running"
+	o.Tests[cfg.TestID] = test
 
 	return test, nil
 }
 
-func (o *Orchestrator) runTest(ctx context.Context, test *Test) {
-	// Create test context with timeout
-	testCtx, cancel := context.WithTimeout(ctx, test.Config.Duration)
-	defer cancel()
+// GetTest retrieves information about a specific test
+func (o *orchestratorImpl) GetTest(testID string) (*common.Test, error) {
+	o.Mu.RLock()
+	defer o.Mu.RUnlock()
 
-	// Update test state
-	o.updateTestState(test, common.TestStateRunning, "Test started")
-
-	// Calculate worker distribution
-	workers, err := o.scheduler.AllocateWorkers(test)
-	if err != nil {
-		o.updateTestState(test, common.TestStateFailed, fmt.Sprintf("Failed to allocate workers: %v", err))
-		return
-	}
-
-	// Start test on workers
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(workers))
-
-	for workerID, count := range workers {
-		wg.Add(1)
-		go func(id string, users int) {
-			defer wg.Done()
-			if err := o.startWorkerTest(testCtx, test, id, users); err != nil {
-				errCh <- fmt.Errorf("worker %s failed: %w", id, err)
-			}
-		}(workerID, count)
-	}
-
-	// Monitor test progress
-	go o.monitorTest(testCtx, test)
-
-	// Wait for completion or failure
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-testCtx.Done():
-		// Test duration completed
-		o.completeTest(test)
-	case err := <-errCh:
-		// Test failed
-		o.updateTestState(test, common.TestStateFailed, err.Error())
-	case <-done:
-		// All workers completed
-		o.completeTest(test)
-	}
-}
-
-func (o *Orchestrator) completeTest(test *Test) {
-	test.mu.Lock()
-	defer test.mu.Unlock()
-
-	test.EndTime = time.Now()
-	test.Status.State = common.TestStateCompleted
-	test.Status.Message = "Test completed successfully"
-
-	// Calculate final statistics
-	avg, p95, p99, errorRate := common.CalculateStats(test.Results)
-	test.Status.AvgResponseTime = avg
-	test.Status.ErrorRate = errorRate
-
-	// TODO: Generate and store test report
-}
-
-func (o *Orchestrator) startWorkerTest(ctx context.Context, test *Test, workerID string, users int) error {
-	worker, exists := o.workers[workerID]
+	test, exists := o.Tests[testID]
 	if !exists {
-		return fmt.Errorf("worker not found")
-	}
-
-	// Update worker state
-	worker.CurrentTestID = test.Config.TestID
-	worker.ActiveUsers = users
-	worker.Status = "running"
-
-	// Start test on worker
-	// TODO: Implement gRPC call to worker to start test
-
-	return nil
-}
-
-func (o *Orchestrator) monitorTest(ctx context.Context, test *Test) {
-	ticker := time.NewTicker(o.cfg.ReportingInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case metric := <-o.metricsCh:
-			if metric.TestID == test.Config.TestID {
-				o.processMetrics(test, metric)
-			}
-		case result := <-o.resultsCh:
-			if result.TestID == test.Config.TestID {
-				o.processResult(test, result)
-			}
-		case <-ticker.C:
-			o.updateTestStats(test)
+		return nil, &common.LoadTestError{
+			Code:    common.ErrTestNotFound,
+			Message: fmt.Sprintf("test not found: %s", testID),
 		}
 	}
-}
 
-func (o *Orchestrator) processMetrics(test *Test, batch common.MetricsBatch) {
-	test.mu.Lock()
-	defer test.mu.Unlock()
-
-	// Update test status with metrics
-	// TODO: Implement metrics processing
-}
-
-func (o *Orchestrator) processResult(test *Test, result *common.RequestResult) {
-	test.mu.Lock()
-	defer test.mu.Unlock()
-
-	test.Results = append(test.Results, result)
-	test.Status.TotalRequests++
-	if result.Error != nil {
-		// Update error statistics
-	}
-}
-
-func (o *Orchestrator) updateTestStats(test *Test) {
-	test.mu.Lock()
-	defer test.mu.Unlock()
-
-	// Calculate current statistics
-	if len(test.Results) > 0 {
-		avg, _, _, errorRate := common.CalculateStats(test.Results)
-		test.Status.AvgResponseTime = avg
-		test.Status.ErrorRate = errorRate
-	}
-}
-
-func (o *Orchestrator) updateTestState(test *Test, state common.TestState, message string) {
-	test.mu.Lock()
-	defer test.mu.Unlock()
-
-	test.Status.State = state
-	test.Status.Message = message
+	return test, nil
 }
 
 // StopTest stops a running test
-func (o *Orchestrator) StopTest(testID string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+func (o *orchestratorImpl) StopTest(testID string) error {
+	o.Mu.Lock()
+	defer o.Mu.Unlock()
 
-	test, exists := o.tests[testID]
+	test, exists := o.Tests[testID]
 	if !exists {
-		return fmt.Errorf("test not found")
+		return &common.LoadTestError{
+			Code:    common.ErrTestNotFound,
+			Message: fmt.Sprintf("test not found: %s", testID),
+		}
 	}
 
-	// Update test state
-	o.updateTestState(test, common.TestStateCancelled, "Test stopped by user")
+	// Update test status
+	test.Status.State = common.TestStateCancelled
+	test.Status.Message = "Test stopped by user"
+	test.EndTime = time.Now()
 
-	// Stop test on all workers
-	for workerID := range test.Workers {
-		if worker, exists := o.workers[workerID]; exists {
-			worker.Status = "idle"
-			worker.ActiveUsers = 0
-			worker.CurrentTestID = ""
+	// Update worker states
+	for workerID, worker := range test.Workers {
+		if w, exists := o.Workers[workerID]; exists {
+			w.Status = "idle"
+			w.ActiveUsers = 0
+			w.CurrentTestID = ""
 		}
+		worker.Status = "idle"
+		worker.ActiveUsers = 0
 	}
 
 	return nil
 }
 
-// GetTest returns information about a specific test
-func (o *Orchestrator) GetTest(testID string) (*Test, error) {
-	o.mu.RLock()
-	defer o.mu.RUnlock()
+// GetTestStatus gets the current status of a test
+func (o *orchestratorImpl) GetTestStatus(testID string) (*common.TestStatus, error) {
+	o.Mu.RLock()
+	defer o.Mu.RUnlock()
 
-	test, exists := o.tests[testID]
+	test, exists := o.Tests[testID]
 	if !exists {
-		return nil, fmt.Errorf("test not found")
+		return nil, &common.LoadTestError{
+			Code:    common.ErrTestNotFound,
+			Message: fmt.Sprintf("test not found: %s", testID),
+		}
 	}
 
-	return test, nil
+	return test.Status, nil
 }
 
-// GetTestStatus returns the current status of a test
-func (o *Orchestrator) GetTestStatus(testID string) (*common.TestStatus, error) {
-	test, err := o.GetTest(testID)
-	if err != nil {
-		return nil, err
+// RegisterWorker registers a new worker node
+func (o *orchestratorImpl) RegisterWorker(workerInfo *common.WorkerInfo) (*common.WorkerState, error) {
+	o.Mu.Lock()
+	defer o.Mu.Unlock()
+
+	if len(o.Workers) >= o.config.MaxWorkers {
+		return nil, fmt.Errorf("maximum number of workers reached")
 	}
 
-	test.mu.RLock()
-	defer test.mu.RUnlock()
+	worker := &common.WorkerState{
+		Info:          workerInfo,
+		Status:        "ready",
+		LastHeartbeat: time.Now(),
+	}
 
-	return &test.Status, nil
+	o.Workers[workerInfo.ID] = worker
+	return worker, nil
+}
+
+// UpdateWorkerHeartbeat updates the last heartbeat time for a worker
+func (o *orchestratorImpl) UpdateWorkerHeartbeat(workerID string, stats *common.ResourceStats) error {
+	o.Mu.Lock()
+	defer o.Mu.Unlock()
+
+	worker, exists := o.Workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker not found: %s", workerID)
+	}
+
+	worker.LastHeartbeat = time.Now()
+	worker.Info.Resources = *stats
+
+	return nil
+}
+
+// RemoveWorker removes a worker from the orchestrator
+func (o *orchestratorImpl) RemoveWorker(workerID string) error {
+	o.Mu.Lock()
+	defer o.Mu.Unlock()
+
+	worker, exists := o.Workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker not found: %s", workerID)
+	}
+
+	// If worker is running a test, mark it as failed
+	if worker.CurrentTestID != "" {
+		if test, exists := o.Tests[worker.CurrentTestID]; exists {
+			test.Status.State = common.TestStateFailed
+			test.Status.Message = fmt.Sprintf("Worker %s failed", workerID)
+		}
+	}
+
+	delete(o.Workers, workerID)
+	return nil
 }

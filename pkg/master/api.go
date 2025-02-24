@@ -6,22 +6,159 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/saika-m/goload/internal/common"
-	"github.com/saika-m/goload/pkg/config"
 )
 
-// API handles HTTP endpoints for the master node
+// Master represents the master node in the distributed load testing system
+type Master struct {
+	config       *common.MasterConfig
+	orchestrator *common.Orchestrator
+	mu           sync.RWMutex
+}
+
+// NewMaster creates a new master instance
+func NewMaster(cfg *common.MasterConfig) (*Master, error) {
+	if cfg == nil {
+		cfg = common.DefaultMasterConfig()
+	}
+
+	orchestrator := NewOrchestrator(cfg)
+
+	return &Master{
+		config:       cfg,
+		orchestrator: orchestrator,
+	}, nil
+}
+
+// StartTest starts a new load test
+func (m *Master) StartTest(ctx context.Context, cfg *common.TestConfig) (*common.Test, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	return m.orchestrator.StartTest(ctx, cfg)
+}
+
+// GetTest retrieves a test by ID
+func (m *Master) GetTest(testID string) (*common.Test, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.orchestrator.GetTest(testID)
+}
+
+// StopTest stops a running test
+func (m *Master) StopTest(testID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.orchestrator.StopTest(testID)
+}
+
+// GetTestStatus gets the current status of a test
+func (m *Master) GetTestStatus(testID string) (*common.TestStatus, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.orchestrator.GetTestStatus(testID)
+}
+
+// RegisterWorker registers a new worker node
+func (m *Master) RegisterWorker(ctx context.Context, info *common.WorkerInfo) (*common.WorkerState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	worker := &common.WorkerState{
+		Info:          info,
+		LastHeartbeat: time.Now(),
+		Status:        "ready",
+	}
+
+	m.orchestrator.Workers[info.ID] = worker
+	return worker, nil
+}
+
+// GetWorker retrieves information about a specific worker
+func (m *Master) GetWorker(workerID string) (*common.WorkerState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	worker, exists := m.orchestrator.Workers[workerID]
+	if !exists {
+		return nil, fmt.Errorf("worker not found: %s", workerID)
+	}
+
+	return worker, nil
+}
+
+// UpdateWorkerStatus updates a worker's status and resource stats
+func (m *Master) UpdateWorkerStatus(workerID string, stats *common.ResourceStats) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	worker, exists := m.orchestrator.Workers[workerID]
+	if !exists {
+		return fmt.Errorf("worker not found: %s", workerID)
+	}
+
+	worker.LastHeartbeat = time.Now()
+	worker.Info.Resources = *stats
+
+	return nil
+}
+
+// GetMetrics returns current metrics for all running tests
+func (m *Master) GetMetrics() (map[string]interface{}, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	metrics := make(map[string]interface{})
+
+	// Aggregate test metrics
+	for testID, test := range m.orchestrator.Tests {
+		test.Mu.RLock()
+		metrics[testID] = map[string]interface{}{
+			"status":            test.Status,
+			"active_users":      test.Status.ActiveUsers,
+			"total_requests":    test.Status.TotalRequests,
+			"error_rate":        test.Status.ErrorRate,
+			"avg_response_time": test.Status.AvgResponseTime.Milliseconds(),
+			"start_time":        test.StartTime,
+			"end_time":          test.EndTime,
+		}
+		test.Mu.RUnlock()
+	}
+
+	// Add worker metrics
+	workerMetrics := make(map[string]interface{})
+	for workerID, worker := range m.orchestrator.Workers {
+		workerMetrics[workerID] = map[string]interface{}{
+			"status":         worker.Status,
+			"active_users":   worker.ActiveUsers,
+			"cpu_usage":      worker.Info.Resources.CPUUsage,
+			"memory_usage":   worker.Info.Resources.MemoryUsage,
+			"last_heartbeat": worker.LastHeartbeat,
+		}
+	}
+	metrics["workers"] = workerMetrics
+
+	return metrics, nil
+}
+
 type API struct {
 	master *Master
 	router *mux.Router
 	server *http.Server
-	mu     sync.RWMutex
 }
 
 // NewAPI creates a new API server
-func NewAPI(master *Master, cfg *config.MasterConfig) *API {
+func NewAPI(master *Master, cfg *common.MasterConfig) *API {
 	api := &API{
 		master: master,
 		router: mux.NewRouter(),
@@ -77,7 +214,7 @@ func (a *API) setupRoutes() {
 }
 
 func (a *API) handleCreateTest(w http.ResponseWriter, r *http.Request) {
-	var cfg config.TestConfig
+	var cfg common.TestConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

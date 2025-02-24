@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,12 +47,19 @@ func GetLocalIP() string {
 	return ""
 }
 
-// GetResourceStats returns current resource usage statistics
-func GetResourceStats() ResourceStats {
+// GetSystemStats returns current system statistics
+type SystemStats struct {
+	CPUCores    int
+	MemoryMB    int64
+	CPUUsage    float64
+	MemoryUsage float64
+}
+
+func GetSystemStats() SystemStats {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
-	return ResourceStats{
+	return SystemStats{
 		CPUCores:    runtime.NumCPU(),
 		MemoryMB:    int64(m.Sys) / 1024 / 1024,
 		CPUUsage:    getCPUUsage(),
@@ -65,9 +71,6 @@ func GetResourceStats() ResourceStats {
 func getCPUUsage() float64 {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
-
-	// This is a simple approximation. For more accurate measurements,
-	// you would need to use platform-specific APIs or libraries like gopsutil
 	return float64(stats.NumGC) / float64(runtime.NumCPU()) * 100
 }
 
@@ -122,76 +125,26 @@ func CalculateStats(results []RequestResult) (avg, p95, p99 time.Duration, error
 // ParseDuration parses a duration string with support for days
 func ParseDuration(s string) (time.Duration, error) {
 	// Regular expression to match duration components
-	re := regexp.MustCompile(`^((\d+)d)?((\d+)h)?((\d+)m)?((\d+)s)?((\d+)ms)?$`)
-	matches := re.FindStringSubmatch(s)
-
-	if matches == nil {
-		// Try standard parsing if our custom format doesn't match
-		return time.ParseDuration(s)
-	}
-
-	var duration time.Duration
-
-	// Parse days
-	if matches[2] != "" {
-		days, _ := strconv.Atoi(matches[2])
-		duration += time.Duration(days) * 24 * time.Hour
-	}
-
-	// Parse hours
-	if matches[4] != "" {
-		hours, _ := strconv.Atoi(matches[4])
-		duration += time.Duration(hours) * time.Hour
-	}
-
-	// Parse minutes
-	if matches[6] != "" {
-		minutes, _ := strconv.Atoi(matches[6])
-		duration += time.Duration(minutes) * time.Minute
-	}
-
-	// Parse seconds
-	if matches[8] != "" {
-		seconds, _ := strconv.Atoi(matches[8])
-		duration += time.Duration(seconds) * time.Second
-	}
-
-	// Parse milliseconds
-	if matches[10] != "" {
-		ms, _ := strconv.Atoi(matches[10])
-		duration += time.Duration(ms) * time.Millisecond
-	}
-
-	return duration, nil
-}
-
-// ValidateConfig validates a scenario configuration
-func ValidateConfig(scenario ScenarioConfig) error {
-	if scenario.Name == "" {
-		return NewLoadTestError(ErrConfigInvalid, "scenario name cannot be empty", nil)
-	}
-	if len(scenario.Steps) == 0 {
-		return NewLoadTestError(ErrConfigInvalid, "scenario must have at least one step", nil)
-	}
-
-	totalWeight := scenario.Weight
-	if totalWeight <= 0 {
-		return NewLoadTestError(ErrConfigInvalid, "scenario weight must be positive", nil)
-	}
-
-	for _, step := range scenario.Steps {
-		if step.Name == "" {
-			return NewLoadTestError(ErrConfigInvalid, "step name cannot be empty", nil)
+	if strings.Contains(s, "d") {
+		parts := strings.Split(s, "d")
+		if len(parts) != 2 {
+			return 0, fmt.Errorf("invalid duration format")
 		}
-		if step.Method == "" {
-			return NewLoadTestError(ErrConfigInvalid, "step method cannot be empty", nil)
+
+		days, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, err
 		}
-		if step.Path == "" {
-			return NewLoadTestError(ErrConfigInvalid, "step path cannot be empty", nil)
+
+		remainingDuration, err := time.ParseDuration(parts[1])
+		if err != nil {
+			return 0, err
 		}
+
+		return time.Duration(days)*24*time.Hour + remainingDuration, nil
 	}
 
-	return nil
+	return time.ParseDuration(s)
 }
 
 // MergeHeaders merges two sets of headers, with override taking precedence
@@ -261,4 +214,14 @@ func FormatDuration(d time.Duration) string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func GetResourceStats() ResourceStats {
+	stats := GetSystemStats()
+	return ResourceStats{
+		CPUCores:    stats.CPUCores,
+		MemoryMB:    stats.MemoryMB,
+		CPUUsage:    stats.CPUUsage,
+		MemoryUsage: stats.MemoryUsage,
+	}
 }

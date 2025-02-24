@@ -6,12 +6,11 @@ import (
 	"sync"
 
 	"github.com/saika-m/goload/internal/common"
-	"github.com/saika-m/goload/pkg/config"
 )
 
 // Worker represents a worker node in the distributed load testing system
 type Worker struct {
-	cfg       *config.WorkerConfig
+	cfg       *common.WorkerConfig
 	executor  *Executor
 	collector *MetricsCollector
 	reporter  *Reporter
@@ -21,7 +20,7 @@ type Worker struct {
 }
 
 // NewWorker creates a new worker instance
-func NewWorker(cfg *config.WorkerConfig) (*Worker, error) {
+func NewWorker(cfg *common.WorkerConfig) (*Worker, error) {
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -88,7 +87,7 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 // StartTest starts a new load test
-func (w *Worker) StartTest(ctx context.Context, cfg *config.TestConfig, virtualUsers int) error {
+func (w *Worker) StartTest(ctx context.Context, cfg *common.TestConfig, virtualUsers int) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -111,7 +110,7 @@ func (w *Worker) GetStatus() (*common.WorkerInfo, error) {
 	info := w.cfg.WorkerInfo()
 	info.Resources = common.GetResourceStats()
 
-	return &info, nil
+	return info, nil
 }
 
 // processResults processes test results and forwards them to metrics collector

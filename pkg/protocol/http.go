@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/saika-m/goload/internal/common"
-	"github.com/saika-m/goload/pkg/config"
 )
 
 // HTTPResponse represents the result of an HTTP request
@@ -21,6 +20,7 @@ type HTTPResponse struct {
 	BytesSent     int64
 	Headers       map[string][]string
 	Body          []byte
+	Duration      time.Duration
 }
 
 // HTTPClient handles HTTP protocol requests
@@ -29,7 +29,7 @@ type HTTPClient struct {
 }
 
 // NewHTTPClient creates a new HTTP client with the specified configuration
-func NewHTTPClient(cfg config.ConnectionPoolConfig) (*HTTPClient, error) {
+func NewHTTPClient(cfg common.ConnectionPoolConfig) (*HTTPClient, error) {
 	// Create transport with connection pooling
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -134,6 +134,7 @@ func (c *HTTPClient) Execute(ctx context.Context, step common.RequestStep) (*HTT
 		BytesSent:     requestSize,
 		Headers:       resp.Header,
 		Body:          body,
+		Duration:      time.Since(start),
 	}, nil
 }
 

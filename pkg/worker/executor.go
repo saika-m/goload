@@ -7,13 +7,12 @@ import (
 	"time"
 
 	"github.com/saika-m/goload/internal/common"
-	"github.com/saika-m/goload/pkg/config"
 	"github.com/saika-m/goload/pkg/protocol"
 )
 
 // Executor handles the execution of load tests on a worker node
 type Executor struct {
-	cfg         *config.WorkerConfig
+	cfg         *common.WorkerConfig
 	httpClient  *protocol.HTTPClient
 	grpcClient  *protocol.GRPCClient
 	wsClient    *protocol.WSClient
@@ -26,7 +25,7 @@ type Executor struct {
 // TestExecution represents a running test on the worker
 type TestExecution struct {
 	TestID       string
-	Config       *config.TestConfig
+	Config       *common.TestConfig
 	VirtualUsers []*VirtualUser
 	StartTime    time.Time
 	Context      context.Context
@@ -42,7 +41,7 @@ type VirtualUser struct {
 }
 
 // NewExecutor creates a new test executor
-func NewExecutor(cfg *config.WorkerConfig, resultsCh chan *common.RequestResult, metricsCh chan *common.Metric) (*Executor, error) {
+func NewExecutor(cfg *common.WorkerConfig, resultsCh chan *common.RequestResult, metricsCh chan *common.Metric) (*Executor, error) {
 	httpClient, err := protocol.NewHTTPClient(cfg.GetConnectionPoolConfig())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -63,7 +62,7 @@ func NewExecutor(cfg *config.WorkerConfig, resultsCh chan *common.RequestResult,
 }
 
 // StartTest begins test execution for the specified number of virtual users
-func (e *Executor) StartTest(ctx context.Context, cfg *config.TestConfig, virtualUsers int) error {
+func (e *Executor) StartTest(ctx context.Context, cfg *common.TestConfig, virtualUsers int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -103,7 +102,7 @@ func (e *Executor) StartTest(ctx context.Context, cfg *config.TestConfig, virtua
 	return nil
 }
 
-func (e *Executor) runVirtualUser(vu *VirtualUser, cfg *config.TestConfig) {
+func (e *Executor) runVirtualUser(vu *VirtualUser, cfg *common.TestConfig) {
 	scenario := cfg.Scenarios[vu.ScenarioIdx]
 
 	for {
@@ -138,12 +137,12 @@ func (e *Executor) runVirtualUser(vu *VirtualUser, cfg *config.TestConfig) {
 	}
 }
 
-func (e *Executor) executeStep(ctx context.Context, cfg *config.TestConfig, scenarioName string, step common.RequestStep) error {
+func (e *Executor) executeStep(ctx context.Context, cfg *common.TestConfig, scenarioName string, step common.RequestStep) error {
 	start := time.Now()
 	var result *common.RequestResult
 
 	switch cfg.Protocol {
-	case string(common.ProtocolHTTP):
+	case common.ProtocolHTTP:
 		resp, err := e.httpClient.Execute(ctx, step)
 		result = &common.RequestResult{
 			WorkerID:     e.cfg.ID,
@@ -160,7 +159,7 @@ func (e *Executor) executeStep(ctx context.Context, cfg *config.TestConfig, scen
 			result.BytesSent = resp.BytesSent
 		}
 
-	case string(common.ProtocolGRPC):
+	case common.ProtocolGRPC:
 		resp, err := e.grpcClient.Execute(ctx, step)
 		result = &common.RequestResult{
 			WorkerID:     e.cfg.ID,
@@ -176,7 +175,7 @@ func (e *Executor) executeStep(ctx context.Context, cfg *config.TestConfig, scen
 			result.BytesSent = resp.BytesSent
 		}
 
-	case string(common.ProtocolWS):
+	case common.ProtocolWebSocket:
 		resp, err := e.wsClient.Execute(ctx, step)
 		result = &common.RequestResult{
 			WorkerID:     e.cfg.ID,

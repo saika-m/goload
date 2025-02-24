@@ -1,20 +1,31 @@
 # Build stage
 FROM golang:1.22-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache make gcc musl-dev
+# Install build dependencies including git
+RUN apk add --no-cache \
+    make \
+    gcc \
+    musl-dev \
+    git
 
 # Set working directory
 WORKDIR /app
 
-# Copy go mod files
-COPY go.mod go.sum ./
+# Copy go mod file first
+COPY go.mod ./
 
-# Download dependencies
-RUN go mod download
+# Initialize the module and download dependencies
+RUN go mod download && \
+    go mod verify
 
-# Copy source code
+# Copy the rest of the source code
 COPY . .
+
+# Set up local module
+RUN go mod edit -replace github.com/saika-m/goload=./
+
+# Ensure all dependencies are downloaded and up to date
+RUN go mod tidy
 
 # Build application
 RUN make build
@@ -31,11 +42,15 @@ RUN adduser -D -u 1000 goload
 # Set working directory
 WORKDIR /app
 
-# Copy binaries from builder
-COPY --from=builder /app/bin/* /app/
+# Copy binary from builder
+COPY --from=builder /app/bin/goload /app/
 
-# Copy configuration
-COPY config/config.yaml /app/config/
+# Copy configuration directory
+COPY --from=builder /app/config /app/config/
+
+# Copy entrypoint script
+COPY worker-entrypoint.sh /app/
+RUN chmod +x /app/worker-entrypoint.sh
 
 # Set ownership
 RUN chown -R goload:goload /app
