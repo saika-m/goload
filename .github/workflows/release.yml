@@ -90,6 +90,21 @@ jobs:
             sha256sum "${PACKAGE_NAME}.tar.gz" > "${PACKAGE_NAME}.tar.gz.sha256"
             echo "CHECKSUM_PATH=${PACKAGE_NAME}.tar.gz.sha256" >> $GITHUB_ENV
           fi
+          
+          # Save checksum to artifact
+          mkdir -p checksums
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            cp "${PACKAGE_NAME}.zip.sha256" checksums/
+          else
+            cp "${PACKAGE_NAME}.tar.gz.sha256" checksums/
+          fi
+      
+      - name: Upload checksums as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums-${{ matrix.suffix }}
+          path: checksums/
+          retention-days: 1
       
       - name: Upload binary to release
         uses: softprops/action-gh-release@v1
@@ -105,13 +120,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download all checksums
         uses: actions/download-artifact@v4
-        
+        with:
+          path: all-checksums
+      
       - name: Combine checksums
         run: |
-          find . -name "*.sha256" -exec cat {} \; > checksums.txt
-          
+          find ./all-checksums -type f -name "*.sha256" -exec cat {} \; > checksums.txt
+          # Make sure the file is not empty
+          [ -s checksums.txt ] || echo "No checksums found" > checksums.txt
+      
       - name: Upload checksums to release
         uses: softprops/action-gh-release@v1
         with:
